@@ -1,0 +1,10 @@
+windows_task:
+  windows_container:
+    image: cirrusci/windowsservercore:2019
+  node_modules_cache:
+    folder: minecraft-launcher/node_modules
+    fingerprint_script: cat minecraft-launcher/package-lock.json
+  install_script: cd minecraft-launcher && npm install
+  build_script: cd minecraft-launcher && npx electron-builder --win --x64
+  binaries_artifacts:
+    path: "minecraft-launcher/dist/*.exe"

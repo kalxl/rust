@@ -14,6 +14,7 @@ target_compile_definitions(RustInjector PRIVATE
 )
 
 target_link_libraries(RustInjector PRIVATE
+    Shlwapi
     Advapi32
 )
 
@@ -21,6 +22,14 @@ set_target_properties(RustInjector PROPERTIES
     WIN32_EXECUTABLE FALSE
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
+
+# Embed manifest so Windows never prompts for elevation (runs as standard user)
+if (MSVC)
+    target_sources(RustInjector PRIVATE src/RustInjector.manifest)
+    set_target_properties(RustInjector PROPERTIES
+        VS_USER_PROPS ""  # prevent any project-level property sheet from overriding
+    )
+endif()
 
 # ── Payload DLL ───────────────────────────────────────────
 add_library(RustDLL SHARED

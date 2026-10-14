@@ -44,7 +44,7 @@
         }
       ],
       "icon": "assets/icon.ico",
-      "requestedExecutionLevel": "requireAdministrator",
+      "requestedExecutionLevel": "asInvoker",
       "signingHashAlgorithms": null,
       "sign": null
     },
