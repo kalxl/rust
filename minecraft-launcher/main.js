@@ -39,7 +39,9 @@ function createMainWindow() {
     backgroundColor: '#00000000'
   });
 
-  mainWindow.loadFile(path.join(__dirname, 'renderer/index.html'));
+  // Use app.getAppPath() so the path resolves correctly both in dev and
+  // when packaged inside an .asar (where __dirname is the asar root)
+  mainWindow.loadFile(path.join(app.getAppPath(), 'renderer', 'index.html'));
   mainWindow.on('closed', () => { mainWindow = null; app.quit(); });
 }
 
@@ -50,7 +52,7 @@ function createOverlayWindow() {
     alwaysOnTop: true, skipTaskbar: true, resizable: false,
     webPreferences: { nodeIntegration: true, contextIsolation: false }
   });
-  overlayWindow.loadFile('renderer/overlay.html');
+  overlayWindow.loadFile(path.join(app.getAppPath(), 'renderer', 'overlay.html'));
 }
 
 app.whenReady().then(createMainWindow);
