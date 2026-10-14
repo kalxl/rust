@@ -43,7 +43,7 @@
           "arch": ["x64"]
         }
       ],
-      "icon": "assets/logo.png",
+      "icon": "assets/icon.ico",
       "requestedExecutionLevel": "requireAdministrator",
       "signingHashAlgorithms": null,
       "sign": null
@@ -54,8 +54,8 @@
       "shortcutName": "Rust Launcher",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "installerIcon": "assets/logo.png",
-      "uninstallerIcon": "assets/logo.png"
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico"
     }
   },
   "keywords": [],
