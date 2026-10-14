@@ -3,6 +3,9 @@ name: Build Rust Launcher
 on:
   push:
     branches: [main]
+    paths:
+      - 'minecraft-launcher/**'
+      - '.github/workflows/build.yml'
   workflow_dispatch:
 
 permissions:
