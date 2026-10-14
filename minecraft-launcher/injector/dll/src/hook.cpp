@@ -95,17 +95,17 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain,
     FPS_Tick();
 
     // Poll menu keybind (detect press edge, not held state)
-    // We read the keybind from menu module
     {
-        // R = default, Menu_HandleKey checks internally
-        // Check all common keys (cheap poll each frame)
-        for (int vk = 0; vk < 256; vk++) {
+        // Track previous key state across frames for edge detection
+        static bool s_PrevKeys[256] = {};
+        for (int vk = 8; vk < 256; vk++) {
             bool down = (GetAsyncKeyState(vk) & 0x8000) != 0;
-            // Only care about the key the menu is bound to —
-            // Menu_HandleKey ignores keys it doesn't care about
-            if (down) {
+            bool wasDown = s_PrevKeys[vk];
+            s_PrevKeys[vk] = down;
+            // Only fire on key-down edge (press, not hold)
+            // Menu_HandleKey internally checks if vk == g_Keybind
+            if (down && !wasDown) {
                 Menu_HandleKey(vk);
-                break; // only process one key per frame to avoid spam
             }
         }
     }

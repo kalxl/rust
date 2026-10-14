@@ -287,14 +287,33 @@ ipcRenderer.on('game-path-selected', (_, p) => {
 
 // ── Inject status from main process ───────────────────────
 const injectStatus = document.getElementById('inject-status');
+const injectToast  = document.getElementById('inject-toast');
+const injectToastIcon = document.getElementById('inject-toast-icon');
+const injectToastText = document.getElementById('inject-toast-text');
+
+let toastTimer = null;
+
+function showToast(message, icon, type) {
+  clearTimeout(toastTimer);
+  injectToastIcon.textContent = icon;
+  injectToastText.textContent = message;
+  injectToast.className = `inject-toast ${type} visible`;
+  toastTimer = setTimeout(() => {
+    injectToast.classList.remove('visible');
+  }, 4000);
+}
+
 ipcRenderer.on('inject-status', (_, status) => {
   if (status === 'success') {
     injectStatus.textContent = 'Injected ✓';
     injectStatus.style.color = 'var(--accent)';
+    showToast('Injected successfully', '✓', 'success');
   } else if (status === 'failed') {
     injectStatus.textContent = 'Inject failed';
+    showToast('Injection failed', '✗', 'error');
   } else if (status === 'not-built') {
     injectStatus.textContent = 'Build injector first';
+    showToast('Injector not found — build it first', '!', 'error');
   }
 });
 
