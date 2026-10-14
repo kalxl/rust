@@ -1,0 +1,6 @@
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+startCommand = "npx serve website"
+restartPolicyType = "ON_FAILURE"

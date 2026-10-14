@@ -1,0 +1,61 @@
+{
+  "name": "rust-launcher",
+  "version": "1.0.0",
+  "description": "Rust — Minecraft Bedrock Launcher",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win --x64",
+    "build:dir": "electron-builder --win --x64 --dir",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "build": {
+    "appId": "com.rust.launcher",
+    "productName": "Rust Launcher",
+    "copyright": "Rust Client",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "assets/**/*",
+      "resources/**/*",
+      "node_modules/**/*",
+      "!node_modules/electron-builder/**/*",
+      "!node_modules/.cache/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/RustInjector.exe",
+        "to": "resources/RustInjector.exe"
+      },
+      {
+        "from": "resources/RustDLL.dll",
+        "to": "resources/RustDLL.dll"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "zip",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "assets/logo.png",
+      "requestedExecutionLevel": "requireAdministrator",
+      "signingHashAlgorithms": null,
+      "sign": null
+    }
+  },
+  "keywords": [],
+  "author": "Rust Client",
+  "license": "ISC",
+  "dependencies": {
+  },
+  "devDependencies": {
+    "electron": "32.2.7",
+    "electron-builder": "^25.1.8"
+  }
+}

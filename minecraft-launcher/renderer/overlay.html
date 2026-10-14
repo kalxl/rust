@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>Overlay</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: transparent;
+      font-family: 'Consolas', 'Courier New', monospace;
+      overflow: hidden;
+      -webkit-app-region: drag;
+      user-select: none;
+    }
+
+    .overlay-panel {
+      background: rgba(15, 10, 6, 0.72);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(196, 144, 106, 0.25);
+      border-radius: 12px;
+      padding: 14px 16px;
+      width: 200px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    }
+
+    .overlay-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 4px 0;
+      border-bottom: 1px solid rgba(139,94,60,0.12);
+    }
+
+    .overlay-row:last-child { border-bottom: none; }
+
+    .ov-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: rgba(184, 164, 138, 0.7);
+    }
+
+    .ov-value {
+      font-size: 14px;
+      font-weight: 700;
+      color: #e8d5b7;
+    }
+
+    .ov-value.green { color: #7fb069; }
+    .ov-value.yellow { color: #d4a843; }
+    .ov-value.red { color: #c0503a; }
+
+    /* Keystrokes */
+    .keys-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 4px;
+      margin-top: 10px;
+    }
+
+    .key {
+      background: rgba(44,34,25,0.7);
+      border: 1px solid rgba(139,94,60,0.2);
+      border-radius: 5px;
+      padding: 5px 4px;
+      text-align: center;
+      font-size: 11px;
+      font-weight: 700;
+      color: rgba(184,164,138,0.6);
+      transition: all 0.08s ease;
+    }
+
+    .key.pressed {
+      background: rgba(139,94,60,0.5);
+      border-color: rgba(196,144,106,0.6);
+      color: #e8d5b7;
+      box-shadow: 0 0 8px rgba(196,144,106,0.3);
+    }
+
+    .key.wide {
+      grid-column: span 3;
+    }
+  </style>
+</head>
+<body>
+  <div class="overlay-panel">
+    <div class="overlay-row">
+      <span class="ov-label">FPS</span>
+      <span class="ov-value green" id="fps-val">--</span>
+    </div>
+    <div class="overlay-row">
+      <span class="ov-label">CPS</span>
+      <span class="ov-value" id="cps-val">0</span>
+    </div>
+    <div class="overlay-row">
+      <span class="ov-label">PING</span>
+      <span class="ov-value" id="ping-val">--</span>
+    </div>
+
+    <!-- Keystroke display -->
+    <div class="keys-grid">
+      <div class="key" id="key-empty-l"></div>
+      <div class="key" id="key-w">W</div>
+      <div class="key" id="key-empty-r"></div>
+      <div class="key" id="key-a">A</div>
+      <div class="key" id="key-s">S</div>
+      <div class="key" id="key-d">D</div>
+      <div class="key wide" id="key-space">SPACE</div>
+    </div>
+  </div>
+
+  <script>
+    const { ipcRenderer } = require('electron');
+
+    // Simulated FPS counter (real impl needs native hook)
+    let fpsBase = 120;
+    function updateFPS() {
+      const fps = Math.round(fpsBase + (Math.random() - 0.5) * 20);
+      const el = document.getElementById('fps-val');
+      el.textContent = fps;
+      el.className = 'ov-value ' + (fps > 100 ? 'green' : fps > 60 ? 'yellow' : 'red');
+    }
+    setInterval(updateFPS, 500);
+    updateFPS();
+
+    // Simulated ping
+    function updatePing() {
+      const ping = Math.round(20 + Math.random() * 30);
+      const el = document.getElementById('ping-val');
+      el.textContent = ping + 'ms';
+      el.className = 'ov-value ' + (ping < 40 ? 'green' : ping < 80 ? 'yellow' : 'red');
+    }
+    setInterval(updatePing, 2000);
+    updatePing();
+
+    // CPS tracker
+    let clicks = [];
+    document.addEventListener('mousedown', () => {
+      const now = Date.now();
+      clicks.push(now);
+      clicks = clicks.filter(t => now - t < 1000);
+      document.getElementById('cps-val').textContent = clicks.length;
+    });
+
+    // Keyboard highlighting
+    const keyMap = {
+      'w': 'key-w', 'a': 'key-a', 's': 'key-s', 'd': 'key-d',
+      ' ': 'key-space'
+    };
+
+    document.addEventListener('keydown', (e) => {
+      const id = keyMap[e.key.toLowerCase()];
+      if (id) document.getElementById(id)?.classList.add('pressed');
+    });
+
+    document.addEventListener('keyup', (e) => {
+      const id = keyMap[e.key.toLowerCase()];
+      if (id) document.getElementById(id)?.classList.remove('pressed');
+    });
+  </script>
+</body>
+</html>

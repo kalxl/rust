@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Rust Launcher</title>
+  <link rel="stylesheet" href="style.css"/>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+  <!-- Full-screen background -->
+  <div class="bg-image"></div>
+  <div class="bg-overlay"></div>
+
+  <!-- Titlebar -->
+  <div class="titlebar">
+    <div class="titlebar-left">
+      <img src="../assets/logo.png" class="logo-img" alt="Rust"/>
+      <span class="titlebar-brand">Rust</span>
+    </div>
+
+    <div class="titlebar-center">
+      <button class="pill-btn" id="btn-discord">
+        <svg class="discord-icon" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057c.002.022.015.043.032.054a19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03z"/>
+        </svg>
+        Join Discord
+      </button>
+    </div>
+
+    <div class="titlebar-controls">
+      <button class="tb-btn" id="btn-min">&#8211;</button>
+      <button class="tb-btn close" id="btn-close">&#10005;</button>
+    </div>
+  </div>
+
+  <!-- Version panel — slide up like settings -->
+  <div class="version-panel" id="version-panel">
+    <div class="version-panel-inner">
+      <div class="version-panel-header">
+        <span>Select Version</span>
+        <button id="btn-version-close">&#10005;</button>
+      </div>
+
+      <!-- Install progress (hidden until installing) -->
+      <div class="version-progress" id="version-progress">
+        <div class="vp-label" id="vp-label">Downloading…</div>
+        <div class="vp-track">
+          <div class="vp-fill" id="vp-fill"></div>
+        </div>
+        <div class="vp-pct" id="vp-pct">0%</div>
+      </div>
+
+      <div class="version-list" id="version-list"></div>
+    </div>
+  </div>
+
+  <!-- Center hero -->
+  <div class="hero">
+    <img src="../assets/logo2.png" class="hero-logo" alt="Rust"/>
+    <h1 class="hero-greeting" id="greeting">Good Morning!</h1>
+    <p class="hero-sub">Ready to play?</p>
+
+    <div class="hero-buttons">
+      <button class="hero-btn primary" id="btn-launch">
+        <span class="btn-icon">&#10138;</span>
+        <span id="launch-text">Launch</span>
+        <span class="launch-version" id="launch-version-tag">1.21.51</span>
+      </button>
+      <button class="hero-btn secondary" id="btn-settings-open">
+        <span class="btn-icon">&#9881;</span>
+        Settings
+      </button>
+    </div>
+    <p class="launch-hint" id="launch-hint"></p>
+  </div>
+
+  <!-- Settings panel — launcher config only -->
+  <div class="settings-panel" id="settings-panel">
+    <div class="settings-inner">
+      <div class="settings-header">
+        <span>Launcher Settings</span>
+        <button class="close-settings" id="btn-settings-close">&#10005;</button>
+      </div>
+
+      <div class="settings-section-label">General</div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Discord Rich Presence</span>
+          <span class="setting-desc">Show Rust in your Discord status</span>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="opt-discord-rpc" checked>
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        </label>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Close to tray on launch</span>
+          <span class="setting-desc">Hide launcher when game starts</span>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="opt-close-tray">
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        </label>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Auto-inject on launch</span>
+          <span class="setting-desc">Inject modules when game starts</span>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="opt-auto-inject" checked>
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        </label>
+      </div>
+
+      <div class="settings-section-label">In-Game Menu</div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Menu Keybind</span>
+          <span class="setting-desc">Key to open the module menu in-game</span>
+        </div>
+        <button class="keybind-btn" id="keybind-btn" data-key="R">
+          <span id="keybind-label">R</span>
+        </button>
+      </div>
+
+      <div class="settings-section-label">About</div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Version</span>
+          <span class="setting-desc">Rust Launcher</span>
+        </div>
+        <span class="setting-value">v1.0.0</span>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Game path</span>
+          <span class="setting-desc" id="game-path-display">Auto-detected</span>
+        </div>
+        <button class="small-action-btn" id="btn-browse-path">Browse</button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Keybind capture overlay -->
+  <div class="keybind-capture" id="keybind-capture">
+    <div class="keybind-capture-box">
+      <div class="keybind-capture-title">Press any key</div>
+      <div class="keybind-capture-sub">to set menu keybind</div>
+      <button class="keybind-cancel" id="keybind-cancel">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Bottom bar -->
+  <div class="bottombar">
+    <div class="bottom-user">
+      <div class="user-avatar">
+        <svg viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z"/>
+        </svg>
+      </div>
+      <div class="user-info">
+        <span class="user-label">Logged in as</span>
+        <span class="user-name">Guest</span>
+      </div>
+    </div>
+
+    <div class="bottom-right">
+      <span class="version-label">Launcher <span class="version-num">v1.0.0</span></span>
+      <span class="inject-status" id="inject-status">Ready to inject</span>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
