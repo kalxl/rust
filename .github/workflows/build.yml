@@ -5,6 +5,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -16,7 +19,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       - name: Install dependencies
         working-directory: minecraft-launcher
@@ -28,7 +31,7 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: false
         run: npm run build
 
-      - name: Upload installer
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: RustLauncher-win-x64
@@ -39,12 +42,12 @@ jobs:
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
-        if: github.ref == 'refs/heads/main'
         with:
           tag_name: v1.0.0
           name: Rust Launcher v1.0.0
           draft: false
           prerelease: false
+          make_latest: true
           files: |
             minecraft-launcher/dist/*.exe
             minecraft-launcher/dist/*.zip
@@ -54,13 +57,13 @@ jobs:
             **Download:** `Rust Launcher Setup.exe`
 
             ### Requirements
-            - Windows 10/11
+            - Windows 10 / 11
             - Minecraft Bedrock installed
             - Run as Administrator
 
-            ### What's included
-            - Rust Launcher (Electron app)
+            ### Included
+            - Rust Launcher UI
             - RustInjector.exe
-            - RustDLL.dll (DX12 hook, FPS, keystrokes, in-game menu)
+            - RustDLL.dll (DX12 hook — FPS, keystrokes, in-game menu)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
