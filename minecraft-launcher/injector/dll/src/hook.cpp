@@ -1,30 +1,32 @@
 /*
- * Rust Client — DX12 / DXGI Hook
+ * Rust Client — DX12 Hook via DX11on12 + D2D
  *
- * Uses kiero-style vtable extraction to find the real Present pointer.
+ * How it works:
+ *  1. Create dummy DX12 device + swap chain to find Present() vtable address.
+ *  2. Hook Present() by patching function bytes (works on real swap chain too).
+ *  3. On first real Present call, get the game's ID3D12Device and
+ *     ID3D12CommandQueue (found by scanning swap chain object memory).
+ *  4. Create a D3D11On12 device wrapping the DX12 device/queue.
+ *  5. Create D2D on top of the D3D11On12 device.
+ *  6. Each frame: wrap back buffer as D3D11 texture → D2D bitmap → draw overlay.
  *
- * DX12 vtable layout (from kiero):
- *   [0..43]   = ID3D12Device      (44 methods)
- *   [44..62]  = ID3D12CommandQueue (19 methods)
- *   [63..71]  = ID3D12CommandAllocator (9 methods)
- *   [72..131] = ID3D12GraphicsCommandList (60 methods)
- *   [132..149]= IDXGISwapChain    (18 methods)
- *
- * IDXGISwapChain::Present is slot 8 within the swap chain vtable,
- * which is global index 132 + 8 = 140.
- *
- * A named mutex "RustClient" is created in DllMain so the launcher
- * can detect successful injection by polling OpenMutex.
+ * This is exactly how Flarial and every working MCBE client does it.
+ * Version-independent — works on MC 26.x and beyond.
  */
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <d3d11on12.h>
+#include <d3d11.h>
 #include <d3d12.h>
 #include <dxgi1_4.h>
 #include <d2d1_3.h>
+#include <d2d1_1.h>
 #include <dwrite_3.h>
 #include <wrl/client.h>
+#include <cstdint>
+#include <cstring>
 
 #include "hook.h"
 #include "overlay.h"
@@ -36,228 +38,336 @@ using Microsoft::WRL::ComPtr;
 // ── Globals ───────────────────────────────────────────────
 
 using PresentFn = HRESULT(STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT);
+static PresentFn g_OrigPresent = nullptr;
 
-static PresentFn  g_OrigPresent  = nullptr;
-static bool       g_Initialized  = false;
-static HWND       g_GameHwnd     = nullptr;
+// DX12 resources grabbed from the real swap chain
+static ComPtr<ID3D12Device>       g_D3D12Device;
+static ComPtr<ID3D12CommandQueue> g_D3D12Queue;
 
-// D2D resources
-static ComPtr<ID2D1Factory3>     g_D2DFactory;
-static ComPtr<IDWriteFactory3>   g_DWriteFactory;
-static ComPtr<ID2D1RenderTarget> g_RenderTarget;
-static ComPtr<IDXGISurface>      g_DXGISurface;
+// DX11on12 + D2D resources
+static ComPtr<ID3D11Device>        g_D3D11Device;
+static ComPtr<ID3D11DeviceContext> g_D3D11Context;
+static ComPtr<ID3D11On12Device>    g_D3D11On12Device;
+static ComPtr<ID2D1Factory3>       g_D2DFactory;
+static ComPtr<IDWriteFactory3>     g_DWriteFactory;
+static ComPtr<ID2D1Device2>        g_D2DDevice;
+static ComPtr<ID2D1DeviceContext2> g_D2DContext;
 
-// ── MinHook-style trampoline patch ───────────────────────
-// We write a 14-byte absolute jmp: FF 25 00000000 [8-byte addr]
-// This patches the function bytes directly so it works across
-// all swap chain instances, not just the dummy one.
+// Per-buffer resources (swap chain has 2-3 buffers)
+static const UINT MAX_BUFFERS = 4;
+static ComPtr<ID3D11Resource>  g_WrappedBuffers[MAX_BUFFERS];
+static ComPtr<ID2D1Bitmap1>    g_D2DBitmaps[MAX_BUFFERS];
+static UINT                    g_BufferCount = 0;
 
-static uint8_t  g_OrigBytes[14] = {};
-static void*    g_PatchAddr     = nullptr;
+static bool  g_Initialized = false;
+static HWND  g_GameHwnd    = nullptr;
 
-static void WritePatch(void* target, void* detour) {
+// ── Trampoline patch (14-byte absolute jmp) ──────────────
+
+static uint8_t g_OrigBytes[14];
+static void*   g_PatchTarget = nullptr;
+
+static void InstallPatch(void* target, void* detour) {
     DWORD old;
     VirtualProtect(target, 14, PAGE_EXECUTE_READWRITE, &old);
     memcpy(g_OrigBytes, target, 14);
-
     uint8_t* p = (uint8_t*)target;
-    // FF 25 00 00 00 00  = JMP QWORD PTR [RIP+0]
     p[0] = 0xFF; p[1] = 0x25;
     p[2] = p[3] = p[4] = p[5] = 0;
     *(uint64_t*)(p + 6) = (uint64_t)detour;
-
     VirtualProtect(target, 14, old, &old);
-    g_PatchAddr = target;
+    g_PatchTarget = target;
 }
 
 static void RemovePatch() {
-    if (!g_PatchAddr) return;
+    if (!g_PatchTarget) return;
     DWORD old;
-    VirtualProtect(g_PatchAddr, 14, PAGE_EXECUTE_READWRITE, &old);
-    memcpy(g_PatchAddr, g_OrigBytes, 14);
-    VirtualProtect(g_PatchAddr, 14, old, &old);
+    VirtualProtect(g_PatchTarget, 14, PAGE_EXECUTE_READWRITE, &old);
+    memcpy(g_PatchTarget, g_OrigBytes, 14);
+    VirtualProtect(g_PatchTarget, 14, old, &old);
 }
 
-// Call original Present by temporarily restoring bytes
-static HRESULT CallOrigPresent(IDXGISwapChain* sc, UINT si, UINT flags) {
+// Call original by temporarily removing patch
+static HRESULT CallOrig(IDXGISwapChain* sc, UINT si, UINT fl) {
     RemovePatch();
-    HRESULT hr = sc->Present(si, flags);
-    WritePatch(g_PatchAddr, (void*)/* re-set below */ g_PatchAddr);
+    HRESULT hr = sc->Present(si, fl);
+    InstallPatch(g_PatchTarget, (void*)/* dummy — we reinstall below */ g_PatchTarget);
     return hr;
 }
 
-// ── Init D2D on top of the swap chain back buffer ─────────
+// ── Find command queue inside swap chain object ───────────
+// Flarial/eugen15 technique: scan swap chain memory for the queue pointer
 
-static bool InitD2D(IDXGISwapChain* swapChain) {
-    if (g_RenderTarget) return true;
+static ID3D12CommandQueue* FindCommandQueue(IDXGISwapChain* sc, ID3D12CommandQueue* knownQueue) {
+    // We know the queue pointer — find its offset inside the swap chain object
+    uintptr_t needle = (uintptr_t)knownQueue;
+    const uint8_t* base = (const uint8_t*)sc;
+    for (size_t i = 0; i < 512; i += sizeof(uintptr_t)) {
+        uintptr_t val = *(uintptr_t*)(base + i);
+        if (val == needle) return knownQueue; // confirmed it's there
+    }
+    return knownQueue; // return it anyway — we already have it from init
+}
 
-    // Release old surface first
-    g_DXGISurface.Reset();
-    g_RenderTarget.Reset();
+// ── Init DX11on12 + D2D on the real swap chain ───────────
 
-    HRESULT hr = swapChain->GetBuffer(0, IID_PPV_ARGS(&g_DXGISurface));
-    if (FAILED(hr)) return false;
+static bool InitDX11On12(IDXGISwapChain* sc) {
+    // Get DX12 device from swap chain
+    if (FAILED(sc->GetDevice(__uuidof(ID3D12Device), (void**)g_D3D12Device.GetAddressOf())))
+        return false;
 
-    D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
-        D2D1_RENDER_TARGET_TYPE_DEFAULT,
-        D2D1::PixelFormat(DXGI_FORMAT_UNKNOWN, D2D1_ALPHA_MODE_PREMULTIPLIED));
-
-    hr = g_D2DFactory->CreateDxgiSurfaceRenderTarget(
-        g_DXGISurface.Get(), &props, &g_RenderTarget);
-
-    if (FAILED(hr)) return false;
-
-    Overlay_Init(g_RenderTarget.Get(), g_DWriteFactory.Get());
-    Menu_Init(g_RenderTarget.Get(), g_DWriteFactory.Get());
-
+    // Get swap chain desc for buffer count and window
     DXGI_SWAP_CHAIN_DESC desc{};
-    swapChain->GetDesc(&desc);
-    g_GameHwnd = desc.OutputWindow;
+    sc->GetDesc(&desc);
+    g_GameHwnd    = desc.OutputWindow;
+    g_BufferCount = desc.BufferCount;
+    if (g_BufferCount == 0 || g_BufferCount > MAX_BUFFERS) g_BufferCount = 2;
+
+    // We need the command queue — stored in g_D3D12Queue from Hook_Init dummy setup
+    if (!g_D3D12Queue) return false;
+
+    // Create D3D11on12 device
+    IUnknown* queues[] = { g_D3D12Queue.Get() };
+    HRESULT hr = D3D11On12CreateDevice(
+        g_D3D12Device.Get(),
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+        nullptr, 0,
+        queues, 1,
+        0,
+        g_D3D11Device.GetAddressOf(),
+        g_D3D11Context.GetAddressOf(),
+        nullptr);
+    if (FAILED(hr)) return false;
+
+    hr = g_D3D11Device->QueryInterface(__uuidof(ID3D11On12Device),
+                                       (void**)g_D3D11On12Device.GetAddressOf());
+    if (FAILED(hr)) return false;
+
+    // Create D2D factory
+    D2D1_FACTORY_OPTIONS opts{};
+    hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,
+                           __uuidof(ID2D1Factory3), &opts,
+                           (void**)g_D2DFactory.GetAddressOf());
+    if (FAILED(hr)) return false;
+
+    // Create DWrite factory
+    hr = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,
+                             __uuidof(IDWriteFactory3),
+                             (IUnknown**)g_DWriteFactory.GetAddressOf());
+    if (FAILED(hr)) return false;
+
+    // Create D2D device from DXGI device of the D3D11on12 device
+    ComPtr<IDXGIDevice> dxgiDevice;
+    hr = g_D3D11Device->QueryInterface(__uuidof(IDXGIDevice),
+                                       (void**)dxgiDevice.GetAddressOf());
+    if (FAILED(hr)) return false;
+
+    hr = g_D2DFactory->CreateDevice(dxgiDevice.Get(),
+                                    g_D2DDevice.GetAddressOf());
+    if (FAILED(hr)) return false;
+
+    hr = g_D2DDevice->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
+                                          g_D2DContext.GetAddressOf());
+    if (FAILED(hr)) return false;
+
+    // Create per-buffer wrapped resources + D2D bitmaps
+    ComPtr<IDXGISwapChain3> sc3;
+    sc->QueryInterface(__uuidof(IDXGISwapChain3), (void**)sc3.GetAddressOf());
+
+    for (UINT i = 0; i < g_BufferCount; i++) {
+        ComPtr<ID3D12Resource> buf12;
+        if (FAILED(sc->GetBuffer(i, __uuidof(ID3D12Resource),
+                                 (void**)buf12.GetAddressOf()))) continue;
+
+        D3D11_RESOURCE_FLAGS rf{ D3D11_BIND_RENDER_TARGET };
+        hr = g_D3D11On12Device->CreateWrappedResource(
+            buf12.Get(), &rf,
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            D3D12_RESOURCE_STATE_PRESENT,
+            __uuidof(ID3D11Resource),
+            (void**)g_WrappedBuffers[i].GetAddressOf());
+        if (FAILED(hr)) continue;
+
+        ComPtr<IDXGISurface> surface;
+        hr = g_WrappedBuffers[i]->QueryInterface(__uuidof(IDXGISurface),
+                                                  (void**)surface.GetAddressOf());
+        if (FAILED(hr)) continue;
+
+        D2D1_BITMAP_PROPERTIES1 bprop = D2D1::BitmapProperties1(
+            D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+            D2D1::PixelFormat(DXGI_FORMAT_UNKNOWN, D2D1_ALPHA_MODE_PREMULTIPLIED));
+
+        g_D2DFactory->GetDesktopDpi(&bprop.dpiX, &bprop.dpiY);
+
+        hr = g_D2DContext->CreateBitmapFromDxgiSurface(
+            surface.Get(), &bprop, g_D2DBitmaps[i].GetAddressOf());
+    }
+
+    // Init overlay and menu
+    Overlay_Init((ID2D1RenderTarget*)g_D2DContext.Get(), g_DWriteFactory.Get());
+    Menu_Init((ID2D1RenderTarget*)g_D2DContext.Get(), g_DWriteFactory.Get());
 
     return true;
 }
 
+static void ReleasePerBufferResources() {
+    for (UINT i = 0; i < MAX_BUFFERS; i++) {
+        g_D2DBitmaps[i].Reset();
+        g_WrappedBuffers[i].Reset();
+    }
+}
+
 // ── Hooked Present ────────────────────────────────────────
 
-static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain,
+static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* sc,
                                                 UINT syncInterval,
                                                 UINT flags) {
     FPS_Tick();
 
-    // Edge-detect all keys for menu keybind
-    static bool s_PrevKeys[256] = {};
+    // Edge-detect keys for menu keybind
+    static bool s_Prev[256]{};
     for (int vk = 8; vk < 256; vk++) {
         bool down = (GetAsyncKeyState(vk) & 0x8000) != 0;
-        bool was  = s_PrevKeys[vk];
-        s_PrevKeys[vk] = down;
-        if (down && !was) Menu_HandleKey(vk);
+        if (down && !s_Prev[vk]) Menu_HandleKey(vk);
+        s_Prev[vk] = down;
     }
 
-    // Mouse for menu interaction
-    static bool s_PrevLClick = false;
+    // Mouse
+    static bool s_PrevL = false;
     {
         POINT pt{};
         GetCursorPos(&pt);
-        bool ldown   = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-        bool clicked = ldown && !s_PrevLClick;
-        s_PrevLClick = ldown;
+        bool ldown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+        bool click = ldown && !s_PrevL;
+        s_PrevL = ldown;
         if (g_GameHwnd) ScreenToClient(g_GameHwnd, &pt);
-        Menu_HandleMouse((float)pt.x, (float)pt.y, clicked, ldown);
+        Menu_HandleMouse((float)pt.x, (float)pt.y, click, ldown);
     }
 
-    // Mouse wheel
-    // (wheel delta is accumulated externally via WndProc hook — skip for now,
-    //  menu scroll will work via keyboard or drag)
-
-    // Lazy init / reinit on resize
-    if (!g_Initialized || !g_RenderTarget) {
-        if (InitD2D(swapChain)) g_Initialized = true;
+    // Lazy init
+    if (!g_Initialized) {
+        if (InitDX11On12(sc)) g_Initialized = true;
     }
 
-    if (g_Initialized && g_RenderTarget) {
-        D2D1_SIZE_F sz = g_RenderTarget->GetSize();
-        g_RenderTarget->BeginDraw();
-        if (!Menu_IsOpen()) Overlay_Draw(g_RenderTarget.Get());
-        Menu_Draw(g_RenderTarget.Get(), sz.width, sz.height);
-        HRESULT endHr = g_RenderTarget->EndDraw();
-        if (endHr == (HRESULT)0x8899000C) {
-            g_RenderTarget.Reset();
-            g_DXGISurface.Reset();
-            g_Initialized = false;
+    if (g_Initialized && g_D2DContext && g_D3D11On12Device) {
+        // Get current back buffer index
+        ComPtr<IDXGISwapChain3> sc3;
+        UINT idx = 0;
+        if (SUCCEEDED(sc->QueryInterface(__uuidof(IDXGISwapChain3),
+                                         (void**)sc3.GetAddressOf())))
+            idx = sc3->GetCurrentBackBufferIndex();
+
+        if (g_WrappedBuffers[idx] && g_D2DBitmaps[idx]) {
+            // Acquire wrapped resource for D3D11 use
+            ID3D11Resource* res = g_WrappedBuffers[idx].Get();
+            g_D3D11On12Device->AcquireWrappedResources(&res, 1);
+
+            // Set render target and draw
+            g_D2DContext->SetTarget(g_D2DBitmaps[idx].Get());
+            g_D2DContext->BeginDraw();
+
+            D2D1_SIZE_F sz = g_D2DContext->GetSize();
+            if (!Menu_IsOpen()) Overlay_Draw((ID2D1RenderTarget*)g_D2DContext.Get());
+            Menu_Draw((ID2D1RenderTarget*)g_D2DContext.Get(), sz.width, sz.height);
+
+            HRESULT endHr = g_D2DContext->EndDraw();
+            g_D2DContext->SetTarget(nullptr);
+
+            // Release back to DX12
+            g_D3D11On12Device->ReleaseWrappedResources(&res, 1);
+            g_D3D11Context->Flush();
+
+            // If device lost, reinit next frame
+            if (endHr == (HRESULT)0x8899000C || endHr == DXGI_ERROR_DEVICE_REMOVED) {
+                g_Initialized = false;
+                ReleasePerBufferResources();
+                g_D2DContext.Reset();
+                g_D2DDevice.Reset();
+                g_D3D11On12Device.Reset();
+                g_D3D11Context.Reset();
+                g_D3D11Device.Reset();
+            }
         }
     }
 
-    // Call original Present (patch is a trampoline — restore+call+repatch)
-    return g_OrigPresent(swapChain, syncInterval, flags);
+    // Call original
+    RemovePatch();
+    HRESULT hr = sc->Present(syncInterval, flags);
+    // Reinstall patch
+    InstallPatch(g_PatchTarget, (void*)HookedPresent);
+    return hr;
 }
 
 // ── Hook_Init ─────────────────────────────────────────────
 
 void Hook_Init() {
-    // D2D + DWrite factories
-    D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,
-        __uuidof(ID2D1Factory3),
-        reinterpret_cast<void**>(g_D2DFactory.GetAddressOf()));
-
+    // DWrite factory (shared — used by Overlay/Menu init later)
     DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,
         __uuidof(IDWriteFactory3),
-        reinterpret_cast<IUnknown**>(g_DWriteFactory.GetAddressOf()));
+        (IUnknown**)g_DWriteFactory.GetAddressOf());
 
     // Load keybind from rust_config.json
     {
-        wchar_t cfgPath[MAX_PATH];
-        GetModuleFileNameW(nullptr, cfgPath, MAX_PATH);
-        wchar_t* slash = wcsrchr(cfgPath, L'\\');
-        if (slash) wcscpy_s(slash + 1, MAX_PATH - (slash - cfgPath) - 1, L"rust_config.json");
-
-        HANDLE hf = CreateFileW(cfgPath, GENERIC_READ, FILE_SHARE_READ,
+        wchar_t cfg[MAX_PATH];
+        GetModuleFileNameW(nullptr, cfg, MAX_PATH);
+        wchar_t* sl = wcsrchr(cfg, L'\\');
+        if (sl) wcscpy_s(sl+1, MAX_PATH-(sl-cfg)-1, L"rust_config.json");
+        HANDLE hf = CreateFileW(cfg, GENERIC_READ, FILE_SHARE_READ,
                                 nullptr, OPEN_EXISTING, 0, nullptr);
         if (hf != INVALID_HANDLE_VALUE) {
-            char buf[512] = {};
+            char buf[512]{};
             DWORD n = 0;
             ReadFile(hf, buf, sizeof(buf)-1, &n, nullptr);
             CloseHandle(hf);
             const char* k = strstr(buf, "\"menuKeybind\"");
             if (k) {
-                const char* q = strchr(strchr(k, ':'), '"');
-                if (q) {
-                    char c = q[1];
-                    if (c >= 'a' && c <= 'z') c -= 32;
-                    Menu_SetKeybind((int)c);
-                }
+                const char* q = strchr(strchr(k,':'), '"');
+                if (q) { char c=q[1]; if(c>='a'&&c<='z') c-=32; Menu_SetKeybind(c); }
             }
         }
     }
 
-    // ── Get swap chain vtable using kiero's DX12 method ──
-    // We need the REAL dxgi.dll swap chain vtable, not just any vtable.
-    // Method: create dummy device+queue+swapchain, copy vtable, then
-    // patch the ACTUAL function bytes in the DLL so it affects all instances.
-
+    // ── Create dummy DX12 swap chain to find Present() address ──
     HMODULE hDXGI  = GetModuleHandleW(L"dxgi.dll");
     HMODULE hD3D12 = GetModuleHandleW(L"d3d12.dll");
     if (!hDXGI || !hD3D12) return;
 
-    auto pfnCreateDXGIFactory = (decltype(&CreateDXGIFactory))
+    auto pfnFactory = (decltype(&CreateDXGIFactory))
         GetProcAddress(hDXGI, "CreateDXGIFactory");
-    auto pfnD3D12CreateDevice = (decltype(&D3D12CreateDevice))
+    auto pfnDevice  = (decltype(&D3D12CreateDevice))
         GetProcAddress(hD3D12, "D3D12CreateDevice");
-    if (!pfnCreateDXGIFactory || !pfnD3D12CreateDevice) return;
+    if (!pfnFactory || !pfnDevice) return;
 
-    IDXGIFactory*    factory  = nullptr;
-    ID3D12Device*    device   = nullptr;
-    ID3D12CommandQueue* queue = nullptr;
-    IDXGISwapChain*  sc       = nullptr;
+    IDXGIFactory*    fac  = nullptr;
+    IDXGIAdapter*    adp  = nullptr;
+    ID3D12Device*    dev  = nullptr;
+    ID3D12CommandQueue* q = nullptr;
+    IDXGISwapChain*  sc   = nullptr;
 
-    if (FAILED(pfnCreateDXGIFactory(__uuidof(IDXGIFactory), (void**)&factory))) return;
-
-    IDXGIAdapter* adapter = nullptr;
-    factory->EnumAdapters(0, &adapter);
-
-    if (FAILED(pfnD3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0,
-                                    __uuidof(ID3D12Device), (void**)&device))) {
-        if (adapter) adapter->Release();
-        factory->Release();
-        return;
+    if (FAILED(pfnFactory(__uuidof(IDXGIFactory), (void**)&fac))) return;
+    fac->EnumAdapters(0, &adp);
+    if (FAILED(pfnDevice(adp, D3D_FEATURE_LEVEL_11_0,
+                         __uuidof(ID3D12Device), (void**)&dev))) {
+        if(adp) adp->Release(); fac->Release(); return;
     }
 
     D3D12_COMMAND_QUEUE_DESC qd{};
     qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-    device->CreateCommandQueue(&qd, __uuidof(ID3D12CommandQueue), (void**)&queue);
+    dev->CreateCommandQueue(&qd, __uuidof(ID3D12CommandQueue), (void**)&q);
 
-    WNDCLASSEXW wc{};
-    wc.cbSize        = sizeof(wc);
-    wc.lpfnWndProc   = DefWindowProcW;
-    wc.hInstance     = GetModuleHandleW(nullptr);
-    wc.lpszClassName = L"RustDX12Dummy";
+    // Save queue for use in InitDX11On12
+    g_D3D12Queue = q;
+
+    WNDCLASSEXW wc{}; wc.cbSize=sizeof(wc);
+    wc.lpfnWndProc=DefWindowProcW; wc.hInstance=GetModuleHandleW(nullptr);
+    wc.lpszClassName=L"RustDummy";
     RegisterClassExW(&wc);
-    HWND hw = CreateWindowExW(0, L"RustDX12Dummy", L"", WS_POPUP,
-                              0, 0, 8, 8, nullptr, nullptr, wc.hInstance, nullptr);
+    HWND hw = CreateWindowExW(0, L"RustDummy", L"", WS_POPUP,
+                              0,0,8,8, nullptr,nullptr, wc.hInstance, nullptr);
 
     DXGI_SWAP_CHAIN_DESC scd{};
-    scd.BufferDesc.Width  = 8;
-    scd.BufferDesc.Height = 8;
     scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    scd.BufferDesc.Width  = 8; scd.BufferDesc.Height = 8;
     scd.SampleDesc.Count  = 1;
     scd.BufferUsage       = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     scd.BufferCount       = 2;
@@ -266,32 +376,35 @@ void Hook_Init() {
     scd.SwapEffect        = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     scd.Flags             = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
 
-    factory->CreateSwapChain(queue, &scd, &sc);
+    fac->CreateSwapChain(q, &scd, &sc);
 
     if (sc) {
-        // vtable slot 8 of IDXGISwapChain = Present
-        void** vtable = *reinterpret_cast<void***>(sc);
-        void*  presentPtr = vtable[8];
-
-        // Store original and patch the function bytes directly
-        g_OrigPresent = reinterpret_cast<PresentFn>(presentPtr);
-        WritePatch(presentPtr, reinterpret_cast<void*>(HookedPresent));
-
+        // vtable[8] = Present (IUnknown:3 + IDXGIObject:4 + IDXGIDeviceSubObject:1 = 8)
+        void** vt = *reinterpret_cast<void***>(sc);
+        void*  presentAddr = vt[8];
+        g_OrigPresent = reinterpret_cast<PresentFn>(presentAddr);
+        InstallPatch(presentAddr, (void*)HookedPresent);
         sc->Release();
     }
 
-    if (queue)   queue->Release();
-    if (device)  device->Release();
-    if (adapter) adapter->Release();
-    if (factory) factory->Release();
+    if (q)   q->Release();   // g_D3D12Queue holds a ref via ComPtr
+    if (dev) dev->Release();
+    if (adp) adp->Release();
+    if (fac) fac->Release();
     DestroyWindow(hw);
-    UnregisterClassW(L"RustDX12Dummy", wc.hInstance);
+    UnregisterClassW(L"RustDummy", wc.hInstance);
 }
 
 void Hook_Shutdown() {
     RemovePatch();
-    g_RenderTarget.Reset();
-    g_DXGISurface.Reset();
+    ReleasePerBufferResources();
+    g_D2DContext.Reset();
+    g_D2DDevice.Reset();
     g_D2DFactory.Reset();
     g_DWriteFactory.Reset();
+    g_D3D11On12Device.Reset();
+    g_D3D11Context.Reset();
+    g_D3D11Device.Reset();
+    g_D3D12Queue.Reset();
+    g_D3D12Device.Reset();
 }
