@@ -5,6 +5,15 @@ const os    = require('os');
 const fs    = require('fs');
 const https = require('https');
 
+// When packaged, __dirname is inside the asar — use app.getAppPath() instead
+const ROOT = app.isPackaged
+  ? path.dirname(app.getPath('exe'))
+  : __dirname;
+
+const RESOURCES = app.isPackaged
+  ? path.join(process.resourcesPath, 'resources')
+  : path.join(__dirname, 'resources');
+
 let mainWindow;
 let overlayWindow;
 
@@ -30,7 +39,7 @@ function createMainWindow() {
     backgroundColor: '#00000000'
   });
 
-  mainWindow.loadFile('renderer/index.html');
+  mainWindow.loadFile(path.join(__dirname, 'renderer/index.html'));
   mainWindow.on('closed', () => { mainWindow = null; app.quit(); });
 }
 
@@ -66,8 +75,8 @@ ipcMain.on('overlay-settings', (_, s) => overlayWindow?.webContents.send('update
 
 ipcMain.on('save-config', (_, config) => {
   try {
-    const cfgPath = path.join(__dirname, 'resources', 'rust_config.json');
-    fs.mkdirSync(path.join(__dirname, 'resources'), { recursive: true });
+    const cfgPath = path.join(RESOURCES, 'rust_config.json');
+    fs.mkdirSync(RESOURCES, { recursive: true });
     fs.writeFileSync(cfgPath, JSON.stringify(config, null, 2));
   } catch (_) {}
 });
@@ -101,8 +110,8 @@ ipcMain.on('launch-minecraft', (event, version) => {
   launchGame().then(() => {
     event.reply('launch-success');
 
-    const injectorPath = path.join(__dirname, 'resources', 'RustInjector.exe');
-    const dllPath      = path.join(__dirname, 'resources', 'RustDLL.dll');
+    const injectorPath = path.join(RESOURCES, 'RustInjector.exe');
+    const dllPath      = path.join(RESOURCES, 'RustDLL.dll');
 
     if (!fs.existsSync(injectorPath)) {
       mainWindow?.webContents.send('inject-status', 'not-built');
