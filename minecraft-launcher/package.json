@@ -39,7 +39,7 @@
     "win": {
       "target": [
         {
-          "target": "zip",
+          "target": "nsis",
           "arch": ["x64"]
         }
       ],
@@ -47,6 +47,15 @@
       "requestedExecutionLevel": "requireAdministrator",
       "signingHashAlgorithms": null,
       "sign": null
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "shortcutName": "Rust Launcher",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "installerIcon": "assets/logo.png",
+      "uninstallerIcon": "assets/logo.png"
     }
   },
   "keywords": [],

@@ -55,11 +55,11 @@ jobs:
           prerelease: false
           make_latest: true
           files: |
-            minecraft-launcher/dist/Rust Launcher-1.0.0-win.zip
+            minecraft-launcher/dist/*.exe
           body: |
             ## Rust Launcher v1.0.0
 
-            **Download:** `Rust Launcher-1.0.0-win.zip` — extract and run `Rust Launcher.exe` as Administrator.
+            **Download:** `Rust Launcher Setup.exe` — run the installer, then launch from desktop shortcut.
 
             ### Requirements
             - Windows 10 / 11
