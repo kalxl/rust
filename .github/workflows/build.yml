@@ -31,13 +31,15 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: false
         run: npm run build
 
+      - name: List dist output
+        working-directory: minecraft-launcher
+        run: dir dist /s /b
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: RustLauncher-win-x64
-          path: |
-            minecraft-launcher/dist/*.exe
-            minecraft-launcher/dist/*.zip
+          path: minecraft-launcher/dist/
           retention-days: 30
 
       - name: Create Release
@@ -48,9 +50,7 @@ jobs:
           draft: false
           prerelease: false
           make_latest: true
-          files: |
-            minecraft-launcher/dist/*.exe
-            minecraft-launcher/dist/*.zip
+          files: minecraft-launcher/dist/**
           body: |
             ## Rust Launcher v1.0.0
 
