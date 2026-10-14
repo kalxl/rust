@@ -1,6 +1,7 @@
 [build]
 builder = "NIXPACKS"
+watchPatterns = ["website/**"]
 
 [deploy]
-startCommand = "npx serve website"
+startCommand = "cd website && npm install && npm start"
 restartPolicyType = "ON_FAILURE"
