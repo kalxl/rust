@@ -17,6 +17,9 @@ static DWORD WINAPI WorkerThread(LPVOID) {
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hModule);
+        // Named mutex so the launcher can detect successful injection
+        // via OpenMutexW(SYNCHRONIZE, FALSE, L"RustClient")
+        CreateMutexW(nullptr, FALSE, L"RustClient");
         CreateThread(nullptr, 0, WorkerThread, nullptr, 0, nullptr);
     }
     if (reason == DLL_PROCESS_DETACH) {

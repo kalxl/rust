@@ -19,6 +19,7 @@
 #include <string>
 
 #include "menu.h"
+#include "overlay.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -453,10 +454,12 @@ void Menu_HandleKey(int vk) {
     if (vk == g_Keybind) g_MenuOpen = !g_MenuOpen;
 }
 
-void Menu_HandleMouse(float x, float y, bool clicked) {
+void Menu_HandleMouse(float x, float y, bool clicked, bool held) {
     g_MouseX  = x;
     g_MouseY  = y;
     g_Clicked = clicked;
+    // Let overlay handle HUD dragging when menu is open
+    if (g_MenuOpen) Overlay_HandleDrag(x, y, held);
 }
 
 void Menu_HandleWheel(float delta) {

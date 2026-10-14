@@ -121,12 +121,36 @@ ipcMain.on('launch-minecraft', (event, version) => {
     }
 
     const injector = spawn(injectorPath, [dllPath], { detached: true, stdio: 'pipe' });
+    let injected = false;
+
     injector.stdout?.on('data', (data) => {
       const msg = data.toString().trim();
-      if (msg.includes('INJECT_SUCCESS')) mainWindow?.webContents.send('inject-status', 'success');
-      else if (msg.includes('INJECT_FAIL')) mainWindow?.webContents.send('inject-status', 'failed');
+      if (msg.includes('INJECT_FAIL')) {
+        mainWindow?.webContents.send('inject-status', 'failed');
+      }
     });
     injector.unref();
+
+    // Poll for the named mutex the DLL creates when it loads successfully.
+    // More reliable than stdout — the mutex lives in Minecraft's process.
+    let pollCount = 0;
+    const mutexPoll = setInterval(() => {
+      pollCount++;
+      const ps = spawn('powershell.exe', [
+        '-NoProfile', '-NonInteractive', '-Command',
+        String.raw`try { $m = [System.Threading.Mutex]::OpenExisting("RustClient"); $m.Dispose(); "FOUND" } catch {}`
+      ], { stdio: 'pipe' });
+      let out = '';
+      ps.stdout?.on('data', d => { out += d.toString(); });
+      ps.on('close', () => {
+        if (out.includes('FOUND') && !injected) {
+          injected = true;
+          clearInterval(mutexPoll);
+          mainWindow?.webContents.send('inject-status', 'success');
+        }
+      });
+      if (pollCount > 60) clearInterval(mutexPoll); // give up after 60s
+    }, 1000);
 
   }).catch((err) => event.reply('launch-error', err.message));
 });
